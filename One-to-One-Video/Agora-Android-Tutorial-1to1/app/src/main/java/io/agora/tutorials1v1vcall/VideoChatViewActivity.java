@@ -1,8 +1,11 @@
 package io.agora.tutorials1v1vcall;
 
 import android.Manifest;
+import android.annotation.TargetApi;
 import android.content.pm.PackageManager;
+import android.graphics.Matrix;
 import android.graphics.PorterDuff;
+import android.os.Build;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
@@ -17,9 +20,13 @@ import android.widget.Toast;
 
 import io.agora.rtc.IRtcEngineEventHandler;
 import io.agora.rtc.RtcEngine;
+import io.agora.rtc.gl.RendererCommon;
+import io.agora.rtc.gl.VideoFrame;
+import io.agora.rtc.mediaio.SurfaceTextureHelper;
+import io.agora.rtc.utils.YuvUtils;
+import io.agora.rtc.video.AgoraVideoFrame;
 import io.agora.rtc.video.VideoCanvas;
-
-import io.agora.rtc.video.VideoEncoderConfiguration; // 2.3.0 and later
+import io.agora.rtc.video.VideoEncoderConfiguration;
 
 public class VideoChatViewActivity extends AppCompatActivity {
 
@@ -29,6 +36,8 @@ public class VideoChatViewActivity extends AppCompatActivity {
 
     // permission WRITE_EXTERNAL_STORAGE is not mandatory for Agora RTC SDK, just incase if you wanna save logs to external sdcard
     private static final String[] REQUESTED_PERMISSIONS = {Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA, Manifest.permission.WRITE_EXTERNAL_STORAGE};
+
+    private TextureCamera mTextureCamera;
 
     private RtcEngine mRtcEngine;
     private final IRtcEngineEventHandler mRtcEventHandler = new IRtcEngineEventHandler() {
@@ -79,6 +88,7 @@ public class VideoChatViewActivity extends AppCompatActivity {
         initializeAgoraEngine();
         setupVideoProfile();
         setupLocalVideo();
+        setupVideoSource();
         joinChannel();
     }
 
@@ -127,6 +137,9 @@ public class VideoChatViewActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+
+        mTextureCamera.stop();
+        mTextureCamera.release();
 
         leaveChannel();
         RtcEngine.destroy();
@@ -197,6 +210,35 @@ public class VideoChatViewActivity extends AppCompatActivity {
         surfaceView.setZOrderMediaOverlay(true);
         container.addView(surfaceView);
         mRtcEngine.setupLocalVideo(new VideoCanvas(surfaceView, VideoCanvas.RENDER_MODE_FIT, 0));
+    }
+
+    private void setupVideoSource() {
+        mRtcEngine.setExternalVideoSource(true, true, true);
+        final int width = 640;
+        final int height = 480;
+        mTextureCamera = new TextureCamera(this, width, height, new SurfaceTextureHelper.OnTextureFrameAvailableListener() {
+            @TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR1)
+            @Override
+            public void onTextureFrameAvailable(int oesTextureId, float[] transformMatrix, long timestampNs) {
+                Matrix matrix = RendererCommon.convertMatrixToAndroidGraphicsMatrix(transformMatrix);
+                SurfaceTextureHelper surfaceTextureHelper = mTextureCamera.getSurfaceTextureHelper();
+                VideoFrame.TextureBuffer textureBuffer = surfaceTextureHelper.createTextureBuffer(width, height, matrix);
+                VideoFrame.I420Buffer i420Buffer = textureBuffer.toI420();
+                textureBuffer.release();
+
+                byte[] buf = YuvUtils.yuv420toNV21(i420Buffer, width, height);
+                AgoraVideoFrame frame = new AgoraVideoFrame();
+                frame.format = AgoraVideoFrame.FORMAT_NV21;
+                frame.stride = width;
+                frame.height = height;
+                frame.buf = buf;
+                frame.rotation = 270;
+                frame.timeStamp = timestampNs / 1000 / 1000;
+                mRtcEngine.pushExternalVideoFrame(frame);
+            }
+        });
+        mTextureCamera.initialize();
+        mTextureCamera.start();
     }
 
     private void joinChannel() {
